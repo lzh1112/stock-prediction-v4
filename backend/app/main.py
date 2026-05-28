@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.deps import engine
-from .api.v1 import admin, news, predict, stocks
+from .api.v1 import admin, market, news, predict, stocks
 from .core.config import settings
 from .core.exceptions import AppException
 from .models import Base
@@ -57,6 +57,7 @@ async def add_timing_and_log(request: Request, call_next):
     return response
 
 
+app.include_router(market.router, prefix="/api/v1", tags=["market"])
 app.include_router(stocks.router, prefix="/api/v1", tags=["stocks"])
 app.include_router(news.router, prefix="/api/v1", tags=["news"])
 app.include_router(predict.router, prefix="/api/v1", tags=["predict"])
