@@ -1,0 +1,213 @@
+version: "3.9"
+
+services:
+  # ==================== 基础设施 ====================
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: stock-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stock_pred}
+      POSTGRES_USER: ${POSTGRES_USER:-stock}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stock}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: stock-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  # ==================== 后端服务 ====================
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: stock-backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - stock-net
+    volumes:
+      - ../backend:/app
+      - model_data:/app/models
+
+  celery-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: stock-celery-worker
+    command: celery -A app.tasks worker --loglevel=info --concurrency=4
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - stock-net
+    volumes:
+      - ../backend:/app
+      - model_data:/app/models
+
+  celery-beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: stock-celery-beat
+    command: celery -A app.tasks beat --loglevel=info
+    env_file:
+      - ../.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - stock-net
+    volumes:
+      - ../backend:/app
+
+  flower:
+    image: mher/flower:2.0
+    container_name: stock-flower
+    command: celery -A app.tasks flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file:
+      - ../.env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  # ==================== 前端原型 ====================
+
+  streamlit:
+    build:
+      context: ../frontend/streamlit_app
+      dockerfile: Dockerfile
+    container_name: stock-streamlit
+    command: streamlit run main.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    env_file:
+      - ../.env
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - stock-net
+    volumes:
+      - ../frontend/streamlit_app:/app
+
+  # ==================== 监控 ====================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: stock-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: stock-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-clock-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  loki:
+    image: grafana/loki:latest
+    container_name: stock-loki
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: stock-promtail
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./loki/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/log:/var/log:ro
+      - ../backend/logs:/var/log/app:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+    networks:
+      - stock-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  model_data:
+
+networks:
+  stock-net:
+    driver: bridge
