@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ...api.deps import get_db
 from ...models import Stock, News, SentimentFeature
@@ -24,6 +25,7 @@ async def list_news(
 
     result = await db.execute(
         select(News)
+        .options(selectinload(News.sentiment))
         .where(News.stock_id == stock.id)
         .order_by(News.publish_time.desc())
         .offset((page - 1) * page_size)
@@ -65,7 +67,9 @@ async def list_news(
 
 @router.get("/news/{news_id}")
 async def get_news_detail(news_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(News).where(News.id == news_id))
+    result = await db.execute(
+        select(News).options(selectinload(News.sentiment)).where(News.id == news_id)
+    )
     news = result.scalar_one_or_none()
     if news is None:
         return {"error": "Not found"}

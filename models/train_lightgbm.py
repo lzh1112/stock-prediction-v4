@@ -46,6 +46,37 @@ def load_data() -> pd.DataFrame:
     return df
 
 
+def load_sentiment_features() -> pd.DataFrame:
+    """从 DB 提取每条新闻的情感特征，按日期聚合到股票-交易日级别。"""
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    query = """
+    SELECT s.code, n.publish_time, sf.sentiment_score, sf.intensity,
+           sf.relevance, sf.event_type
+    FROM sentiment_features sf
+    JOIN news n ON sf.news_id = n.id
+    JOIN stocks s ON n.stock_id = s.id
+    """
+    df = pd.read_sql(query, engine, parse_dates=["publish_time"])
+    engine.dispose()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df["trade_date"] = df["publish_time"].dt.date
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+
+    # 按 股票+交易日 聚合: 平均情感得分、总强度、新闻数
+    agg = df.groupby(["code", "trade_date"]).agg(
+        avg_sentiment=("sentiment_score", "mean"),
+        max_intensity=("intensity", "max"),
+        avg_relevance=("relevance", "mean"),
+        news_count=("sentiment_score", "count"),
+        positive_ratio=("sentiment_score", lambda x: (x > 0).mean()),
+    ).reset_index()
+
+    return agg
+
+
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     """为每只股票计算技术指标特征（无未来函数）。"""
     result = []
@@ -106,6 +137,17 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         result.append(group)
 
     df_full = pd.concat(result, ignore_index=True)
+
+    # 合并情感特征
+    sentiment_df = load_sentiment_features()
+    if not sentiment_df.empty:
+        df_full = df_full.merge(sentiment_df, on=["code", "trade_date"], how="left")
+        for col in ["avg_sentiment", "max_intensity", "avg_relevance", "news_count", "positive_ratio"]:
+            if col in df_full.columns:
+                df_full[col] = df_full[col].fillna(0)
+    else:
+        for col in ["avg_sentiment", "max_intensity", "avg_relevance", "news_count", "positive_ratio"]:
+            df_full[col] = 0.0
 
     # 截面排名: 每个交易日，按未来收益率排名，前30%为赢家(target=1)，后30%为输家(target=0)
     df_full["target"] = 0

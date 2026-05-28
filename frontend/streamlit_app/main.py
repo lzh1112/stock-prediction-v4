@@ -186,18 +186,50 @@ with tab2:
         st.header(f"📰 {code} 新闻分析")
         news_list = get_news(code)
         if news_list:
+            # 情感分布概览
+            sentiments = [n.get("sentiment", {}).get("sentiment_score", 0) or 0 for n in news_list if n.get("sentiment")]
+            if sentiments:
+                pos = sum(1 for s in sentiments if s > 0.1)
+                neg = sum(1 for s in sentiments if s < -0.1)
+                neu = len(sentiments) - pos - neg
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("积极 🟢", pos)
+                with col_b:
+                    st.metric("中性 ⚪", neu)
+                with col_c:
+                    st.metric("消极 🔴", neg)
+                st.divider()
+
             for n in news_list:
                 sent = n.get("sentiment")
-                emoji = ""
-                if sent and sent.get("sentiment_score"):
-                    emoji = "🟢" if sent["sentiment_score"] > 0 else "🔴" if sent["sentiment_score"] < 0 else "⚪"
+                if sent and sent.get("sentiment_score") is not None:
+                    score = sent["sentiment_score"]
+                    if score > 0.1:
+                        emoji, color = "🟢", "#22c55e"
+                    elif score < -0.1:
+                        emoji, color = "🔴", "#ef4444"
+                    else:
+                        emoji, color = "⚪", "#9ca3af"
+                    label = f"{emoji} [{sent.get('event_type', 'N/A')}] score={score:+.2f} | intensity={sent.get('intensity', 0):.1f}"
+                else:
+                    color = "#6b7280"
+                    label = "⚫ [未分析]"
 
-                with st.expander(f"{emoji} {n['title'][:80]}", expanded=False):
-                    st.caption(f"来源: {n.get('source', '')} | {n.get('publish_time', '')}")
+                with st.expander(f"{label} | {n['title'][:60]}", expanded=False):
+                    st.caption(f"来源: {n.get('source', '?')} | {n.get('publish_time', '?')}")
                     if sent:
-                        st.json(sent)
+                        cols = st.columns(4)
+                        with cols[0]:
+                            st.metric("情感", f"{sent['sentiment_score']:+.2f}")
+                        with cols[1]:
+                            st.metric("强度", f"{sent['intensity']:.2f}")
+                        with cols[2]:
+                            st.metric("相关度", f"{sent['relevance']:.2f}")
+                        with cols[3]:
+                            st.metric("类型", sent.get("event_type", "N/A"))
         else:
-            st.info("暂无新闻数据，LLM 情感分析将在阶段 2 实现", icon="ℹ️")
+            st.info("暂无新闻数据，请先运行管理页的「初始化数据」", icon="ℹ️")
     else:
         st.info("👈 请先选择一只股票", icon="ℹ️")
 
