@@ -219,31 +219,103 @@ elif page == "🔍 个股详情":
             closes = [p["close"] for p in prices]
             volumes = [p["volume"] for p in prices]
 
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+            n = len(closes)
 
+            # --- 计算技术指标 ---
+            # MA
+            def sma(data, w):
+                return [sum(data[max(0,i-w+1):i+1])/min(i+1,w) for i in range(len(data))]
+
+            ma5 = sma(closes, 5) if n >= 5 else closes
+            ma20 = sma(closes, 20) if n >= 20 else closes
+
+            # BOLL (20,2)
+            boll_mid = ma20
+            boll_upper, boll_lower = [], []
+            for i in range(n):
+                w = closes[max(0,i-19):i+1]
+                std = (sum((x - sum(w)/len(w))**2 for x in w) / len(w)) ** 0.5 if len(w) > 1 else 0
+                boll_upper.append(boll_mid[i] + 2 * std)
+                boll_lower.append(boll_mid[i] - 2 * std)
+
+            # MACD
+            ema12, ema26, macd_vals, signal_vals, hist_vals = closes[0], closes[0], [], [], []
+            for i, p in enumerate(closes):
+                ema12 = p * 2/13 + ema12 * 11/13
+                ema26 = p * 2/27 + ema26 * 25/27
+                d = ema12 - ema26
+                macd_vals.append(d)
+                sig = macd_vals[0] if i == 0 else d * 2/10 + signal_vals[-1] * 8/10
+                signal_vals.append(sig)
+                hist_vals.append(d - sig)
+
+            # RSI (14)
+            rsi_vals = [50.0] * 14
+            for i in range(14, n):
+                gains, losses = [], []
+                for j in range(i-13, i+1):
+                    diff = closes[j] - closes[j-1]
+                    gains.append(diff if diff > 0 else 0)
+                    losses.append(-diff if diff < 0 else 0)
+                avg_g = sum(gains) / 14
+                avg_l = sum(losses) / 14
+                rs = avg_g / (avg_l + 1e-9)
+                rsi_vals.append(100 - 100/(1+rs))
+
+            # --- 4行子图: K线 + 成交量 + MACD + RSI ---
+            fig = make_subplots(
+                rows=4, cols=1, shared_xaxes=True,
+                vertical_spacing=0.02,
+                row_heights=[0.45, 0.2, 0.18, 0.17],
+            )
+
+            # K线 + MA + BOLL
             fig.add_trace(go.Candlestick(
                 x=dates, open=opens, high=highs, low=lows, close=closes, name="K线",
                 increasing=dict(line=dict(color="#ef4444"), fillcolor="#ef4444"),
                 decreasing=dict(line=dict(color="#22c55e"), fillcolor="#22c55e"),
             ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=ma5, mode="lines", name="MA5",
+                                     line=dict(color="#f59e0b", width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=ma20, mode="lines", name="MA20",
+                                     line=dict(color="#3b82f6", width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=boll_upper, mode="lines", name="BOLL上",
+                                     line=dict(color="#6366f1", width=0.5, dash="dot"),
+                                     showlegend=False), row=1, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=boll_lower, mode="lines", name="BOLL下",
+                                     line=dict(color="#6366f1", width=0.5, dash="dot"),
+                                     fill="tonexty", fillcolor="rgba(99,102,241,0.05)",
+                                     showlegend=False), row=1, col=1)
 
-            if len(closes) >= 5:
-                ma5 = [sum(closes[max(0, i - 4): i + 1]) / min(i + 1, 5) for i in range(len(closes))]
-                fig.add_trace(go.Scatter(x=dates, y=ma5, mode="lines", name="MA5",
-                                         line=dict(color="#f59e0b", width=1)), row=1, col=1)
-            if len(closes) >= 20:
-                ma20 = [sum(closes[max(0, i - 19): i + 1]) / min(i + 1, 20) for i in range(len(closes))]
-                fig.add_trace(go.Scatter(x=dates, y=ma20, mode="lines", name="MA20",
-                                         line=dict(color="#3b82f6", width=1)), row=1, col=1)
+            # 成交量
+            vol_colors = ["#ef4444" if closes[i] >= opens[i] else "#22c55e" for i in range(n)]
+            fig.add_trace(go.Bar(x=dates, y=volumes, name="成交量",
+                                 marker=dict(color=vol_colors), opacity=0.35), row=2, col=1)
 
-            colors = ["#ef4444" if closes[i] >= opens[i] else "#22c55e" for i in range(len(closes))]
-            fig.add_trace(go.Bar(x=dates, y=volumes, name="成交量", marker=dict(color=colors), opacity=0.3), row=2, col=1)
+            # MACD
+            macd_colors = ["#ef4444" if h >= 0 else "#22c55e" for h in hist_vals]
+            fig.add_trace(go.Bar(x=dates, y=hist_vals, name="MACD柱",
+                                 marker=dict(color=macd_colors), opacity=0.7), row=3, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=macd_vals, mode="lines", name="DIF",
+                                     line=dict(color="#f59e0b", width=1)), row=3, col=1)
+            fig.add_trace(go.Scatter(x=dates, y=signal_vals, mode="lines", name="DEA",
+                                     line=dict(color="#3b82f6", width=1)), row=3, col=1)
 
-            fig.update_layout(height=500, xaxis=dict(rangeslider=dict(visible=False)),
-                              margin=dict(l=0, r=0, t=0, b=0), legend=dict(orientation="h", y=1.12),
-                              template="plotly_dark")
+            # RSI
+            fig.add_trace(go.Scatter(x=dates, y=rsi_vals, mode="lines", name="RSI(14)",
+                                     line=dict(color="#a855f7", width=1.5)), row=4, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="rgba(239,68,68,0.3)", row=4, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="rgba(34,197,94,0.3)", row=4, col=1)
+
+            fig.update_layout(height=750, xaxis=dict(rangeslider=dict(visible=False)),
+                              margin=dict(l=0, r=0, t=0, b=0),
+                              legend=dict(orientation="h", y=1.08, x=0),
+                              template="plotly_dark",
+                              hovermode="x unified")
             fig.update_yaxes(title_text="价格", row=1, col=1)
-            fig.update_yaxes(title_text="成交量", row=2, col=1)
+            fig.update_yaxes(title_text="量", row=2, col=1)
+            fig.update_yaxes(title_text="MACD", row=3, col=1)
+            fig.update_yaxes(title_text="RSI", row=4, col=1)
 
             st.plotly_chart(fig, use_container_width=True)
 
