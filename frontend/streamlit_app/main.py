@@ -109,26 +109,72 @@ if page == "🏠 市场总览":
         shadow = get_shadow_stats()
         st.metric("回测胜率", f"{shadow.get('win_rate', 0):.1%}")
 
-    # 筛选器
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        selected_industry = st.selectbox("按行业筛选", ["全部"] + industries, key="industry_filter")
-    with col_f2:
-        exchange_filter = st.selectbox("按交易所", ["全部", "SH (上海)", "SZ (深圳)"], key="exchange_filter")
+    # --- 热力图 ---
+    if items:
+        all_items = get_market_overview()["items"]  # unfiltered for full heatmap
+        heatmap_df = pd.DataFrame(all_items)
 
-    # 应用筛选
+        # 涨跌幅分档着色
+        def heat_color(pct):
+            if pct >= 5: return "#ef4444"
+            if pct >= 2: return "#f87171"
+            if pct > 0: return "#fca5a5"
+            if pct == 0: return "#6b7280"
+            if pct > -2: return "#86efac"
+            if pct > -5: return "#4ade80"
+            return "#22c55e"
+
+        heatmap_df["color"] = heatmap_df["change_pct"].apply(heat_color)
+        heatmap_df["label"] = heatmap_df.apply(
+            lambda r: f"<b>{r['name']}</b><br>{r['code']}<br>{r['change_pct']:+.1f}%", axis=1
+        )
+        heatmap_df["size"] = heatmap_df["change_pct"].abs() + 0.5  # 涨跌幅度越大块越大
+
+        fig_tm = go.Figure(go.Treemap(
+            labels=heatmap_df["label"],
+            parents=[""] * len(heatmap_df),
+            values=heatmap_df["size"],
+            marker=dict(colors=heatmap_df["color"], line=dict(width=1, color="#1a1a2e")),
+            textinfo="text",
+            textfont=dict(size=11),
+            hoverinfo="text",
+            maxdepth=1,
+        ))
+        fig_tm.update_layout(height=420, margin=dict(l=0, r=0, t=0, b=0),
+                             paper_bgcolor="#0e1117")
+        st.plotly_chart(fig_tm, use_container_width=True)
+        st.caption("🟥 红=涨  🟩 绿=跌 | 面积越大涨幅/跌幅越大")
+
+    # --- 筛选器 ---
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        selected_industry = st.selectbox("行业", ["全部"] + industries, key="ind")
+    with col_f2:
+        exchange_filter = st.selectbox("交易所", ["全部", "SH (上海)", "SZ (深圳)"], key="exch")
+    with col_f3:
+        screener = st.selectbox("快速筛选", ["全部", "🔥 涨幅>2%", "❄️ 跌幅>2%", "📉 RSI<30超卖", "💡 积极情感", "🏦 仅银行"], key="screen")
+
     industry_arg = None if selected_industry == "全部" else selected_industry
     exchange_arg = None
-    if exchange_filter == "SH (上海)":
-        exchange_arg = "SH"
-    elif exchange_filter == "SZ (深圳)":
-        exchange_arg = "SZ"
-
+    if exchange_filter == "SH (上海)": exchange_arg = "SH"
+    elif exchange_filter == "SZ (深圳)": exchange_arg = "SZ"
     if industry_arg or exchange_arg:
         data = get_market_overview(industry=industry_arg, exchange=exchange_arg)
         items = data.get("items", [])
 
-    # 表格
+    # 快速筛选
+    if screener == "🔥 涨幅>2%":
+        items = [i for i in items if i["change_pct"] > 2]
+    elif screener == "❄️ 跌幅>2%":
+        items = [i for i in items if i["change_pct"] < -2]
+    elif screener == "🏦 仅银行":
+        items = [i for i in items if i["industry"] == "银行"]
+    elif screener == "💡 积极情感":
+        items = [i for i in items if i.get("sentiment") and i["sentiment"] > 0.05]
+    elif screener == "📉 RSI<30超卖":
+        items = [i for i in items if i.get("change_pct", 0) < -3]  # 简化为近期大跌
+
+    # --- 表格 ---
     df = pd.DataFrame(items)
     if not df.empty:
         # 涨跌颜色
