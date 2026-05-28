@@ -83,7 +83,7 @@ else:
 
 # --- 主区域 ---
 
-tab1, tab2, tab3 = st.tabs(["📈 K线 & 预测", "📰 新闻分析", "📋 系统信息"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 K线 & 预测", "📰 新闻分析", "📊 回测曲线", "📋 系统信息"])
 
 with tab1:
     if code:
@@ -202,6 +202,48 @@ with tab2:
         st.info("👈 请先选择一只股票", icon="ℹ️")
 
 with tab3:
+    st.header("📊 回测曲线")
+
+    @st.cache_data(ttl=120)
+    def get_backtest_daily():
+        try:
+            r = requests.get(f"{API_BASE}/admin/shadow-daily?days=120", timeout=10)
+            return r.json()
+        except Exception:
+            return {"daily": [], "overall_win_rate": 0}
+
+    bt = get_backtest_daily()
+    daily_data = bt.get("daily", [])
+
+    if daily_data:
+        overall_wr = bt.get("overall_win_rate", 0)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("回测总胜率", f"{overall_wr:.1%}", delta=f"{overall_wr - 0.5:+.1%} vs 随机")
+        with col_b:
+            st.metric("回测天数", len(daily_data))
+
+        # Plot daily + cumulative win rate
+        dates = [d["date"] for d in daily_data]
+        daily_wr = [d["win_rate"] for d in daily_data]
+        cum_wr = [d["cumulative_win_rate"] for d in daily_data]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=dates, y=daily_wr, name="日胜率", marker=dict(opacity=0.4)))
+        fig.add_trace(go.Scatter(x=dates, y=cum_wr, name="累计胜率",
+                                 line=dict(color="#f59e0b", width=2)))
+        fig.add_hline(y=0.5, line_dash="dash", line_color="gray", annotation_text="随机基线")
+        fig.update_layout(
+            height=400, margin=dict(l=0, r=0, t=0, b=0),
+            template="plotly_dark", yaxis=dict(tickformat=".0%"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption(f"模型: LightGBM 截面排名预测, {bt.get('overall_win_rate', 0):.1%} 胜率 (共 {len(daily_data)} 个交易日)")
+    else:
+        st.info("暂无回测数据。运行: python models/run_backtest.py", icon="ℹ️")
+
+with tab4:
     st.header("⚙️ 系统信息")
     col1, col2 = st.columns(2)
 

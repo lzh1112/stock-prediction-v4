@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from datetime import date, timedelta
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +127,47 @@ async def shadow_backfill(db: AsyncSession = Depends(get_db)):
 async def shadow_stats(days: int = 30, db: AsyncSession = Depends(get_db)):
     """获取影子模式累计胜率统计。"""
     return await get_shadow_stats(db, days=days)
+
+
+@router.get("/admin/shadow-daily")
+async def shadow_daily(days: int = 60, db: AsyncSession = Depends(get_db)):
+    """获取每日胜率（用于回测曲线图）。"""
+    from ...models import DailyShadow
+
+    today = date.today()
+    cutoff = today - timedelta(days=days)
+
+    records = (await db.execute(
+        select(DailyShadow).where(
+            DailyShadow.predict_date >= cutoff,
+            DailyShadow.is_correct.isnot(None),
+        ).order_by(DailyShadow.predict_date.asc())
+    )).scalars().all()
+
+    daily = {}
+    for r in records:
+        d = r.predict_date.isoformat()
+        daily.setdefault(d, {"total": 0, "correct": 0})
+        daily[d]["total"] += 1
+        daily[d]["correct"] += int(r.is_correct)
+
+    result = []
+    cumulative_correct = 0
+    cumulative_total = 0
+    for d in sorted(daily):
+        cumulative_correct += daily[d]["correct"]
+        cumulative_total += daily[d]["total"]
+        wr = daily[d]["correct"] / daily[d]["total"] if daily[d]["total"] > 0 else 0
+        cwr = cumulative_correct / cumulative_total if cumulative_total > 0 else 0
+        result.append({
+            "date": d,
+            "win_rate": round(wr, 4),
+            "cumulative_win_rate": round(cwr, 4),
+            "total": daily[d]["total"],
+            "correct": daily[d]["correct"],
+        })
+
+    return {"daily": result, "overall_win_rate": round(cumulative_correct / cumulative_total, 4) if cumulative_total > 0 else 0}
 
 
 @router.post("/admin/reload-model")
