@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_db
-from ...services.data_fetcher import fetch_all_stocks_prices
+from ...core.config import settings
+from ...services.data_fetcher import fetch_all_stocks_prices, fetch_all_stocks_news
+from ...services.llm_router import extract_sentiment
+from ...services.shadow import run_shadow_predictions, backfill_actual_prices, get_shadow_stats
+from ...models import Stock, News, SentimentFeature
 
 router = APIRouter()
 
@@ -37,6 +41,91 @@ async def seed_data(db: AsyncSession = Depends(get_db)):
         "stocks_processed": len(results),
         "details": results,
     }
+
+
+@router.post("/admin/seed-news")
+async def seed_news(db: AsyncSession = Depends(get_db)):
+    """抓取 50 只股票的近期财经新闻。每只约 10-30 条。"""
+    results = await fetch_all_stocks_news(db)
+    total = sum(results.values())
+    return {
+        "status": "ok",
+        "total_news": total,
+        "stocks_processed": len(results),
+    }
+
+
+@router.post("/admin/extract-sentiment")
+async def extract_sentiment_batch(
+    stock_code: str = "600519.SH",
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+):
+    """对指定股票的最近 N 条新闻提取LLM情感特征。需要配置 LLM_API_KEY。"""
+    stock = (await db.execute(select(Stock).where(Stock.code == stock_code))).scalar_one_or_none()
+    if stock is None:
+        return {"status": "error", "message": f"股票 {stock_code} 不存在"}
+
+    news_list = (await db.execute(
+        select(News)
+        .where(News.stock_id == stock.id)
+        .order_by(News.publish_time.desc())
+        .limit(limit)
+    )).scalars().all()
+
+    if not news_list:
+        return {"status": "ok", "processed": 0, "message": "无新闻数据"}
+
+    count = 0
+    for news in news_list:
+        existing = (await db.execute(
+            select(SentimentFeature).where(SentimentFeature.news_id == news.id)
+        )).scalar_one_or_none()
+        if existing:
+            continue
+
+        result = await extract_sentiment(
+            title=news.title,
+            content=news.content or "",
+            stock_name=stock.name,
+        )
+        if result is None:
+            continue
+
+        sf = SentimentFeature(
+            news_id=news.id,
+            event_type=result.event_type,
+            sentiment_score=result.sentiment_score,
+            intensity=result.intensity,
+            relevance=result.relevance,
+            raw_llm_response=result.model_dump(),
+            model_version=settings.LLM_MODEL_NAME,
+        )
+        db.add(sf)
+        count += 1
+
+    await db.commit()
+    return {"status": "ok", "processed": count, "total_news": len(news_list)}
+
+
+@router.post("/admin/shadow-run")
+async def shadow_run(db: AsyncSession = Depends(get_db)):
+    """对全部50只股票运行当日影子预测。"""
+    results = await run_shadow_predictions(db)
+    return {"status": "ok", **results}
+
+
+@router.post("/admin/shadow-backfill")
+async def shadow_backfill(db: AsyncSession = Depends(get_db)):
+    """回填已达目标日期的影子预测实际结果。"""
+    results = await backfill_actual_prices(db)
+    return {"status": "ok", **results}
+
+
+@router.get("/admin/shadow-stats")
+async def shadow_stats(days: int = 30, db: AsyncSession = Depends(get_db)):
+    """获取影子模式累计胜率统计。"""
+    return await get_shadow_stats(db, days=days)
 
 
 @router.post("/admin/reload-model")

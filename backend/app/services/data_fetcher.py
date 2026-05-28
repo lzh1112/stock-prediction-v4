@@ -161,11 +161,11 @@ async def fetch_all_stocks_prices(session: AsyncSession) -> dict[str, int]:
 async def fetch_news_for_stock(
     session: AsyncSession,
     stock: Stock,
-    max_news: int = 50,
+    max_news: int = 30,
 ) -> int:
     """
     从 akshare 获取单个股票的近期新闻并去重写入 DB。
-    返回新写入的记录数。
+    仅获取最近新闻，返回新写入的记录数。
     """
     symbol = stock.code.split(".")[0]
 
@@ -177,13 +177,14 @@ async def fetch_news_for_stock(
     if df.empty:
         return 0
 
+    cols = list(df.columns)
     count = 0
     for _, row in df.head(max_news).iterrows():
-        title = str(row.get("title", row.get("标题", "")))
-        content = str(row.get("content", row.get("内容", "")))
-        url = str(row.get("url", row.get("链接", "")))
-        source = str(row.get("source", row.get("来源", "")))
-        pub_time_str = str(row.get("publish_time", row.get("发布时间", "")))
+        title = str(row.iloc[1]) if len(cols) > 1 else ""
+        content = str(row.iloc[2]) if len(cols) > 2 else ""
+        pub_time_str = str(row.iloc[3]) if len(cols) > 3 else ""
+        source = str(row.iloc[4]) if len(cols) > 4 else ""
+        url = str(row.iloc[5]) if len(cols) > 5 else ""
 
         title_hash = hashlib.sha256((title + stock.code).encode()).hexdigest()
 
@@ -200,7 +201,7 @@ async def fetch_news_for_stock(
 
         news = News(
             stock_id=stock.id,
-            title=title,
+            title=title[:500],
             content=content or None,
             source=source or None,
             url=url or None,
@@ -212,6 +213,16 @@ async def fetch_news_for_stock(
 
     await session.commit()
     return count
+
+
+async def fetch_all_stocks_news(session: AsyncSession) -> dict[str, int]:
+    """批量获取所有样本股票的新闻。"""
+    stocks = await ensure_stocks(session)
+    results = {}
+    for stock in stocks:
+        n = await fetch_news_for_stock(session, stock)
+        results[stock.code] = n
+    return results
 
 
 async def get_kline_data(session: AsyncSession, code: str, days: int = 365) -> list[dict]:

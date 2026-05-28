@@ -29,6 +29,14 @@ def search_stocks(keyword: str) -> list[dict]:
         return []
 
 
+@st.cache_data(ttl=30)
+def get_shadow_stats() -> dict:
+    try:
+        r = requests.get(f"{API_BASE}/admin/shadow-stats", timeout=5)
+        return r.json()
+    except Exception:
+        return {"total_predictions": 0, "correct": 0, "win_rate": 0}
+
 @st.cache_data(ttl=60)
 def get_stock_detail(code: str) -> dict:
     try:
@@ -211,6 +219,10 @@ Swagger 文档: http://localhost:8000/docs
             st.metric("已录入股票数", total)
         except Exception:
             st.metric("已录入股票数", "N/A")
+
+        shadow = get_shadow_stats()
+        st.metric("影子胜率 (30日)", f"{shadow.get('win_rate', 0):.1%}")
+        st.metric("总预测次数", shadow.get("total_predictions", 0))
 
     st.divider()
 

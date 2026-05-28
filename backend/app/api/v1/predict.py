@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...api.deps import get_db
 from ...models import Stock, DailyPrice
 from ...schemas.prediction import PredictionResponse, FactorItem
-from ...services.predictor import rule_based_predict
+from ...services.predictor import ml_predict
 
 router = APIRouter()
 
@@ -31,16 +31,23 @@ async def predict(request: "PredictRequest", db: AsyncSession = Depends(get_db))
         .order_by(DailyPrice.trade_date.asc())
     )
     prices = result.scalars().all()
-    closes = [p.close for p in prices]
 
-    if len(closes) < 30:
+    if len(prices) < 40:
         from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"数据不足 ({len(closes)} 条K线, 需要至少30条)")
+        raise HTTPException(status_code=400, detail=f"数据不足 ({len(prices)} 条K线, 需要至少40条)")
 
-    pred = rule_based_predict(closes)
-    pred.stock_code = request.stock_code
+    closes = [p.close for p in prices]
+    highs = [p.high for p in prices]
+    lows = [p.low for p in prices]
+    volumes = [float(p.volume) for p in prices]
+
+    pred = ml_predict(request.stock_code, closes, highs, lows, volumes)
+    if pred is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="模型未训练，请先运行 models/train_lightgbm.py")
+
     pred.predict_date = today.isoformat()
-    pred.target_date = (today + timedelta(days=1)).isoformat()
+    pred.target_date = (today + timedelta(days=3)).isoformat()
 
     return PredictionResponse(
         stock_code=pred.stock_code,
@@ -58,8 +65,38 @@ async def predict(request: "PredictRequest", db: AsyncSession = Depends(get_db))
 async def get_prediction_history(
     stock_code: str,
     days: int = 30,
+    db: AsyncSession = Depends(get_db),
 ):
-    return {"stock_code": stock_code, "records": []}
+    stock = (await db.execute(select(Stock).where(Stock.code == stock_code))).scalar_one_or_none()
+    if stock is None:
+        return {"stock_code": stock_code, "records": []}
+
+    from datetime import date
+    from ...models import DailyShadow
+
+    cutoff = date.today() - timedelta(days=days)
+    records = (await db.execute(
+        select(DailyShadow).where(
+            DailyShadow.stock_id == stock.id,
+            DailyShadow.predict_date >= cutoff,
+        ).order_by(DailyShadow.predict_date.desc())
+    )).scalars().all()
+
+    return {
+        "stock_code": stock_code,
+        "records": [
+            {
+                "predict_date": r.predict_date.isoformat(),
+                "target_date": r.target_date.isoformat(),
+                "predicted_prob": r.predicted_prob,
+                "predicted_label": r.predicted_label,
+                "actual_close": r.actual_close,
+                "is_correct": r.is_correct,
+                "confidence": r.confidence,
+            }
+            for r in records
+        ],
+    }
 
 
 class PredictRequest(BaseModel):

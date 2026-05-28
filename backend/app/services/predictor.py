@@ -1,12 +1,21 @@
 """
-简单预测服务 (原型版 — 技术指标 + 规则基预测)
+LightGBM 预测服务
 
-阶段 2-3 将被 ML 模型替代。
+加载训练好的 LightGBM 模型进行截面相对排名预测。
+目标: 股票未来3日收益率进入截面前30%的概率。
 """
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+MODEL_PATH = Path(__file__).resolve().parent.parent.parent.parent / "models" / "lgbm_model.pkl"
+
+_model_cache: dict | None = None
 
 
 @dataclass
@@ -15,150 +24,130 @@ class PredictResult:
     predict_date: str
     target_date: str
     predicted_prob: float
-    predicted_label: str  # "up" or "down"
+    predicted_label: str
     confidence: float
     top_factors: list[dict]
-    model_version: str = "prototype-v0"
+    model_version: str
 
 
-def compute_sma(prices: list[float], window: int) -> list[float]:
-    """简单移动平均"""
-    if len(prices) < window:
-        return [prices[-1]] * len(prices) if prices else []
-    result = []
-    for i in range(len(prices)):
-        if i < window - 1:
-            result.append(sum(prices[: i + 1]) / (i + 1))
-        else:
-            result.append(sum(prices[i - window + 1 : i + 1]) / window)
-    return result
+def _load_model() -> dict | None:
+    global _model_cache
+    if _model_cache is not None:
+        return _model_cache
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            _model_cache = pickle.load(f)
+        return _model_cache
+    except FileNotFoundError:
+        return None
 
 
-def compute_rsi(prices: list[float], window: int = 14) -> float:
-    """计算 RSI 指标 (最近值)"""
-    if len(prices) < window + 1:
-        return 50.0
+def _compute_features(closes: list[float], highs: list[float] | None,
+                      lows: list[float] | None, volumes: list[float] | None) -> dict | None:
+    """计算与训练时一致的特征。需要至少40个交易日数据。"""
+    n = len(closes)
+    if n < 40:
+        return None
 
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        diff = prices[i] - prices[i - 1]
-        gains.append(diff if diff > 0 else 0)
-        losses.append(-diff if diff < 0 else 0)
+    c = np.array(closes, dtype=np.float64)
+    h = np.array(highs, dtype=np.float64) if highs else c
+    l = np.array(lows, dtype=np.float64) if lows else c
+    v = np.array(volumes, dtype=np.float64) if volumes else np.ones_like(c)
 
-    avg_gain = sum(gains[-window:]) / window
-    avg_loss = sum(losses[-window:]) / window
-    if avg_loss == 0:
-        return 100.0
+    # 收益率
+    ret_1d = (c[-1] / c[-2] - 1) if n >= 2 else 0.0
+    ret_5d = (c[-1] / c[-6] - 1) if n >= 6 else 0.0
+    ret_10d = (c[-1] / c[-11] - 1) if n >= 11 else 0.0
 
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+    # 均线偏离
+    ma5 = c[-5:].mean()
+    ma20 = c[-20:].mean()
+    ma5_bias = (c[-1] - ma5) / ma5
+    ma20_bias = (c[-1] - ma20) / ma20
 
+    # 波动率
+    rets = np.diff(c[-21:]) / c[-21:-1]
+    volatility_5d = rets[-5:].std() if len(rets) >= 5 else 0.0
+    volatility_20d = rets.std() if len(rets) > 0 else 0.0
 
-def compute_macd(prices: list[float]) -> dict:
-    """计算 MACD 指标"""
-    if len(prices) < 26:
-        return {"macd": 0, "signal": 0, "histogram": 0}
-
-    ema12 = prices[0]
-    ema26 = prices[0]
-    k12 = 2 / (12 + 1)
-    k26 = 2 / (26 + 1)
-    k9 = 2 / (9 + 1)
-
-    macd_values = []
-    for p in prices[1:]:
-        ema12 = p * k12 + ema12 * (1 - k12)
-        ema26 = p * k26 + ema26 * (1 - k26)
-        macd_values.append(ema12 - ema26)
-
-    signal = macd_values[0]
-    signal_values = [signal]
-    for m in macd_values[1:]:
-        signal = m * k9 + signal * (1 - k9)
-        signal_values.append(signal)
-
-    return {
-        "macd": round(macd_values[-1], 4),
-        "signal": round(signal_values[-1], 4),
-        "histogram": round(macd_values[-1] - signal_values[-1], 4),
-    }
-
-
-def rule_based_predict(closes: list[float]) -> PredictResult:
-    """
-    基于技术指标的简单规则预测:
-    - SMA 金叉/死叉
-    - MACD 方向
-    - RSI 超买/超卖
-    - 近期动量
-    """
-    if len(closes) < 30:
-        return PredictResult(
-            stock_code="",
-            predict_date="",
-            target_date="",
-            predicted_prob=0.5,
-            predicted_label="up",
-            confidence=0.0,
-            top_factors=[],
-        )
-
-    sma5 = compute_sma(closes, 5)
-    sma20 = compute_sma(closes, 20)
-    rsi = compute_rsi(closes)
-    macd = compute_macd(closes)
-
-    momentum_5d = (closes[-1] / closes[-6]) - 1 if len(closes) >= 6 else 0
-    momentum_10d = (closes[-1] / closes[-11]) - 1 if len(closes) >= 11 else 0
-
-    score = 0.0
-    factors = []
-
-    # SMA 交叉
-    sma_bullish = sma5[-1] > sma20[-1]
-    sma_bearish = sma5[-1] < sma20[-1]
-    if sma_bullish:
-        score += 0.15
-        factors.append({"factor": "SMA金叉 (MA5>MA20)", "weight": 0.15})
-    if sma_bearish:
-        score -= 0.15
-        factors.append({"factor": "SMA死叉 (MA5<MA20)", "weight": -0.15})
+    # 量比
+    vol_ma5 = v[-6:-1].mean()
+    volume_ratio = v[-1] / vol_ma5 if vol_ma5 > 0 else 1.0
 
     # MACD
-    if macd["histogram"] > 0:
-        score += 0.12
-        factors.append({"factor": "MACD柱>0", "weight": 0.12})
-    else:
-        score -= 0.12
-        factors.append({"factor": "MACD柱<0", "weight": -0.12})
+    ema12 = c[-12]
+    ema26 = c[-26]
+    for p in c[-11:]:
+        ema12 = p * (2/13) + ema12 * (1 - 2/13)
+    for p in c[-25:]:
+        ema26 = p * (2/27) + ema26 * (1 - 2/27)
+    macd_val = ema12 - ema26
+    signal_val = macd_val * (2/10)
+    macd_hist = macd_val - signal_val
 
     # RSI
-    if rsi < 30:
-        score += 0.10
-        factors.append({"factor": f"RSI超卖 ({rsi:.1f})", "weight": 0.10})
-    elif rsi > 70:
-        score -= 0.10
-        factors.append({"factor": f"RSI超买 ({rsi:.1f})", "weight": -0.10})
+    delta = np.diff(c[-15:])
+    gain = np.maximum(delta, 0).mean()
+    loss = np.maximum(-delta, 0).mean()
+    rs = gain / (loss + 1e-9)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
 
-    # 动量
-    if momentum_5d > 0.02:
-        score += 0.10
-        factors.append({"factor": f"5日动量 {momentum_5d:.2%}", "weight": 0.10})
-    elif momentum_5d < -0.02:
-        score -= 0.10
-        factors.append({"factor": f"5日动量 {momentum_5d:.2%}", "weight": -0.10})
+    # 高低价比率
+    hl_ratio = (h[-1] - l[-1]) / (c[-1] + 1e-9)
+    hl_ratio_ma5_v = np.array([(h[i] - l[i]) / (c[i] + 1e-9) for i in range(-5, 0)]).mean()
 
-    prob = 0.5 + score
-    prob = max(0.01, min(0.99, prob))
+    features = {
+        "ret_1d": ret_1d,
+        "ret_5d": ret_5d,
+        "ret_10d": ret_10d,
+        "ma_5_bias": ma5_bias,
+        "ma_20_bias": ma20_bias,
+        "volatility_5d": volatility_5d,
+        "volatility_20d": volatility_20d,
+        "volume_ratio": volume_ratio,
+        "macd": macd_val,
+        "macd_signal": signal_val,
+        "macd_hist": macd_hist,
+        "rsi": rsi,
+        "hl_ratio": hl_ratio,
+        "hl_ratio_ma5": hl_ratio_ma5_v,
+    }
+    return features
+
+
+def ml_predict(stock_code: str, closes: list[float], highs: list[float] | None = None,
+               lows: list[float] | None = None, volumes: list[float] | None = None) -> PredictResult | None:
+    """使用 LightGBM 模型预测。返回 None 表示模型不可用。"""
+    model_data = _load_model()
+    if model_data is None:
+        return None
+
+    feats = _compute_features(closes, highs, lows, volumes)
+    if feats is None:
+        return None
+
+    model = model_data["model"]
+    feature_cols = model_data["feature_cols"]
+
+    X = np.array([[feats.get(c, 0.0) for c in feature_cols]], dtype=np.float64)
+    prob = float(model.predict_proba(X)[0, 1])
+
+    importances = dict(zip(feature_cols, model.feature_importances_))
+    top = sorted(
+        [{"factor": k, "weight": float(importances.get(k, 0))} for k in feats],
+        key=lambda x: abs(x["weight"]), reverse=True,
+    )[:5]
+
     label = "up" if prob >= 0.5 else "down"
-    confidence = abs(prob - 0.5) * 2  # [0, 1]
+    confidence = abs(prob - 0.5) * 2
 
     return PredictResult(
-        stock_code="",
+        stock_code=stock_code,
         predict_date="",
         target_date="",
         predicted_prob=round(prob, 4),
         predicted_label=label,
         confidence=round(confidence, 4),
-        top_factors=sorted(factors, key=lambda x: abs(x["weight"]), reverse=True),
+        top_factors=top,
+        model_version=f"lgbm-auc{model_data['auc']:.3f}",
     )

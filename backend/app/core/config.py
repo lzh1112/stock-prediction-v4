@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "多模态新闻驱动型股价预测系统"
 
     # --- 数据库 (原型: SQLite) ---
-    DATABASE_PATH: str = "data/stock_pred.db"
+    DATABASE_PATH: str = str(
+        __import__("pathlib").Path(__file__).resolve().parent.parent.parent / "data" / "stock_pred.db"
+    )
 
     @property
     def DATABASE_URL(self) -> str:
