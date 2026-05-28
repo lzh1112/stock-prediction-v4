@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import String, Date, DateTime, func
+from sqlalchemy import BigInteger, String, Date, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -26,7 +26,7 @@ class DailyPrice(Base):
     __tablename__ = "daily_prices"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    stock_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), nullable=False, index=True)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     open: Mapped[float] = mapped_column(nullable=False)
     high: Mapped[float] = mapped_column(nullable=False)

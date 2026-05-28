@@ -23,10 +23,10 @@ async def test_list_stocks(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_predict_not_ready(client: AsyncClient):
-    """预测接口阶段 3 前返回 501。"""
+async def test_predict_no_data(client: AsyncClient):
+    """无数据时返回 404（股票不存在）或 400（数据不足）。"""
     response = await client.post("/api/v1/predict", json={"stock_code": "000001.SZ"})
-    assert response.status_code == 501
+    assert response.status_code in (404, 400)
 
 
 @pytest.mark.asyncio

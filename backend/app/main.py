@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -7,16 +8,22 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .api.deps import engine
 from .api.v1 import admin, news, predict, stocks
 from .core.config import settings
 from .core.exceptions import AppException
+from .models import Base
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：初始化数据库连接池、加载模型
+    # 启动时：创建表 + 确保数据目录存在
+    os.makedirs(os.path.dirname(settings.DATABASE_PATH) or ".", exist_ok=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
-    # 关闭时：清理资源
+    # 关闭时
+    await engine.dispose()
 
 
 app = FastAPI(
@@ -25,8 +32,6 @@ app = FastAPI(
     docs_url="/docs",
     lifespan=lifespan,
 )
-
-# --- 中间件 ---
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +44,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_timing_and_log(request: Request, call_next):
-    """请求计时 + 全局异常捕获。"""
     start = time.perf_counter()
     try:
         response = await call_next(request)
@@ -52,8 +56,6 @@ async def add_timing_and_log(request: Request, call_next):
     response.headers["X-Response-Time-ms"] = f"{elapsed * 1000:.1f}"
     return response
 
-
-# --- 路由注册 ---
 
 app.include_router(stocks.router, prefix="/api/v1", tags=["stocks"])
 app.include_router(news.router, prefix="/api/v1", tags=["news"])

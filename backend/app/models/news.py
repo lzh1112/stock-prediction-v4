@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import json
+
 from sqlalchemy import String, Text, DateTime, func, ForeignKey, Float
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -35,7 +36,17 @@ class SentimentFeature(Base):
     sentiment_score: Mapped[float | None] = mapped_column(Float)
     intensity: Mapped[float | None] = mapped_column(Float)
     relevance: Mapped[float | None] = mapped_column(Float)
-    raw_llm_response: Mapped[dict | None] = mapped_column(JSONB)
+    _raw_llm_response: Mapped[str | None] = mapped_column("raw_llm_response", Text, nullable=True)
+
+    @property
+    def raw_llm_response(self) -> dict | None:
+        if self._raw_llm_response is None:
+            return None
+        return json.loads(self._raw_llm_response)
+
+    @raw_llm_response.setter
+    def raw_llm_response(self, value: dict | None) -> None:
+        self._raw_llm_response = json.dumps(value, ensure_ascii=False) if value is not None else None
     model_version: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

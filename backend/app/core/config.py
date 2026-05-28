@@ -16,26 +16,16 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-change-in-production"
     PROJECT_NAME: str = "多模态新闻驱动型股价预测系统"
 
-    # --- 数据库 ---
-    POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: int = 5432
-    POSTGRES_DB: str = "stock_pred"
-    POSTGRES_USER: str = "stock"
-    POSTGRES_PASSWORD: str = "change_me"
+    # --- 数据库 (原型: SQLite) ---
+    DATABASE_PATH: str = "data/stock_pred.db"
 
     @property
     def DATABASE_URL(self) -> str:
-        return (
-            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
+        return f"sqlite+aiosqlite:///{self.DATABASE_PATH}"
 
     @property
     def DATABASE_URL_SYNC(self) -> str:
-        return (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
+        return f"sqlite:///{self.DATABASE_PATH}"
 
     # --- Redis ---
     REDIS_URL: str = "redis://localhost:6379/0"
