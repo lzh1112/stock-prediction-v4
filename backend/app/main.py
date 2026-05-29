@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.deps import engine
-from .api.v1 import admin, market, news, predict, stocks
+from .api.v1 import admin, ai, market, news, predict, stocks
 from .core.config import settings
 from .core.exceptions import AppException
 from .models import Base
@@ -62,6 +62,7 @@ app.include_router(stocks.router, prefix="/api/v1", tags=["stocks"])
 app.include_router(news.router, prefix="/api/v1", tags=["news"])
 app.include_router(predict.router, prefix="/api/v1", tags=["predict"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+app.include_router(ai.router, prefix="/api/v1", tags=["ai"])
 
 
 @app.get("/health", include_in_schema=False)

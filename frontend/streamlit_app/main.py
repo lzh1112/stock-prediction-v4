@@ -14,6 +14,59 @@ API_BASE = "http://localhost:8000/api/v1"
 
 st.set_page_config(page_title="股价预测系统 V4.0", page_icon="📈", layout="wide")
 
+# --- 自定义CSS，去除Streamlit默认痕迹，模拟原生App ---
+st.markdown("""
+<style>
+    /* 隐藏默认header和footer */
+    header[data-testid="stHeader"] { display: none !important; }
+    footer { display: none !important; }
+    #MainMenu { display: none !important; }
+
+    /* 减小侧边栏padding */
+    [data-testid="stSidebar"] { padding-top: 0; }
+
+    /* 紧凑按钮 */
+    .stButton > button {
+        border-radius: 6px;
+        font-weight: 600;
+        transition: all 0.2s;
+    }
+    .stButton > button:hover { transform: scale(1.02); }
+
+    /* 卡片式metric */
+    [data-testid="stMetric"] {
+        background: #1a1a2e;
+        border-radius: 10px;
+        padding: 12px 16px;
+        border: 1px solid #2a2a4a;
+    }
+
+    /* 紧凑表格 */
+    [data-testid="stDataFrame"] { font-size: 13px; }
+
+    /* 侧边栏背景 */
+    [data-testid="stSidebar"] > div:first-child {
+        background: linear-gradient(180deg, #0e1117 0%, #1a1a2e 100%);
+    }
+
+    /* 顶部标题栏 */
+    .app-header {
+        padding: 8px 0;
+        border-bottom: 1px solid #2a2a4a;
+        margin-bottom: 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .app-header h1 { font-size: 1.3rem; margin: 0; }
+
+    /* 滚动条 */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0e1117; }
+    ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- 缓存 ---
 
 @st.cache_data(ttl=60)
@@ -80,7 +133,7 @@ def call_predict(stock_code: str) -> dict | None:
 # ===================== 侧边栏 =====================
 
 st.sidebar.title("📊 股价预测 V4.0")
-page = st.sidebar.radio("导航", ["🏠 市场总览", "🔍 个股详情", "📊 回测曲线", "📰 新闻分析", "⚙️ 系统"])
+page = st.sidebar.radio("导航", ["🏠 市场总览", "🔍 个股详情", "📊 回测曲线", "📰 新闻分析", "🤖 AI助手", "⚙️ 系统"])
 
 
 # ===================== 市场总览 =====================
@@ -438,6 +491,117 @@ elif page == "📰 新闻分析":
                         with c4: st.metric("类型", sent.get("event_type", "N/A"))
         else:
             st.info("暂无新闻数据")
+
+
+# ===================== AI 助手 =====================
+
+elif page == "🤖 AI助手":
+    st.title("🤖 AI 投资助手 · 小析")
+    st.caption("直接问我任何问题，比如\"茅台最近怎么样？\"或\"推荐几只科技股\"，我会自动查找相关数据。")
+
+    # 初始化session state
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "chat_stock_code" not in st.session_state:
+        st.session_state.chat_stock_code = ""
+
+    # 聊天消息区域
+    chat_container = st.container(height=480, border=False)
+
+    with chat_container:
+        if not st.session_state.chat_history:
+            st.markdown("""
+            <div style='text-align:center;color:#666;padding:50px 20px'>
+            <div style='font-size:48px;margin-bottom:12px'>🤖</div>
+            <div style='font-size:16px;font-weight:600;margin-bottom:8px'>你好！我是小析，你的AI投资助手</div>
+            <div style='font-size:13px;line-height:2'>
+            直接输入问题，我会自动识别你想了解的股票 📊<br>
+            试试说：<br>
+            <code>茅台最近表现怎么样？</code><br>
+            <code>比亚迪现在适合买入吗？</code><br>
+            <code>上证50有哪些成分股值得关注？</code>
+            </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                with st.chat_message("user", avatar="👤"):
+                    st.markdown(msg["content"])
+            else:
+                with st.chat_message("assistant", avatar="🤖"):
+                    st.markdown(msg["content"])
+                    # 显示匹配的股票标签
+                    if msg.get("stocks"):
+                        stock_tags = ", ".join(
+                            f"`{s['code']}` {s['name']}" for s in msg["stocks"]
+                        )
+                        st.caption(f"📌 已匹配: {stock_tags}")
+
+    # 输入区
+    st.divider()
+    input_col, btn_col = st.columns([6, 1])
+    with input_col:
+        user_input = st.chat_input(
+            "输入问题... 如\"分析一下茅台\"、\"平安银行最近怎么样\"",
+            key="ai_chat_input",
+        )
+    with btn_col:
+        if st.button("🔄 清空", use_container_width=True, key="clear_chat"):
+            st.session_state.chat_history = []
+            st.session_state.chat_stock_code = ""
+            st.rerun()
+
+    # 处理输入
+    if user_input:
+        msg = user_input.strip()
+        if not msg:
+            st.stop()
+
+        # 添加用户消息
+        st.session_state.chat_history.append({"role": "user", "content": msg})
+
+        # 调用AI
+        with st.spinner("小析思考中..."):
+            try:
+                payload = {
+                    "message": msg,
+                    "history": [
+                        {"role": h["role"], "content": h["content"]}
+                        for h in st.session_state.chat_history[:-1]
+                    ],
+                }
+                # 如果对话已绑定了股票，传递过去
+                if st.session_state.chat_stock_code:
+                    payload["stock_code"] = st.session_state.chat_stock_code
+
+                r = requests.post(f"{API_BASE}/ai/chat", json=payload, timeout=60)
+                result = r.json()
+                reply = result.get("reply", "抱歉，分析出错。")
+
+                # 记录匹配的股票
+                matched = result.get("matched_stocks", [])
+                active_stock = result.get("stock")
+            except Exception as e:
+                reply = f"请求失败: {str(e)}"
+                matched = []
+                active_stock = None
+
+        assistant_msg = {"role": "assistant", "content": reply}
+
+        # 如果AI匹配到了唯一股票，自动绑定
+        if active_stock:
+            st.session_state.chat_stock_code = active_stock["code"]
+            assistant_msg["stocks"] = [active_stock]
+        elif matched:
+            assistant_msg["stocks"] = matched
+
+        st.session_state.chat_history.append(assistant_msg)
+        st.rerun()
+
+    # 底部
+    st.divider()
+    st.caption("⚠️ AI分析仅供参考，不构成投资建议。投资有风险，入市需谨慎。")
 
 
 # ===================== 系统信息 =====================
