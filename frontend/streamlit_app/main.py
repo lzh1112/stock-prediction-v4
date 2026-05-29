@@ -109,42 +109,6 @@ if page == "🏠 市场总览":
         shadow = get_shadow_stats()
         st.metric("回测胜率", f"{shadow.get('win_rate', 0):.1%}")
 
-    # --- 热力图 ---
-    if items:
-        all_items = get_market_overview()["items"]  # unfiltered for full heatmap
-        heatmap_df = pd.DataFrame(all_items)
-
-        # 涨跌幅分档着色
-        def heat_color(pct):
-            if pct >= 5: return "#ef4444"
-            if pct >= 2: return "#f87171"
-            if pct > 0: return "#fca5a5"
-            if pct == 0: return "#6b7280"
-            if pct > -2: return "#86efac"
-            if pct > -5: return "#4ade80"
-            return "#22c55e"
-
-        heatmap_df["color"] = heatmap_df["change_pct"].apply(heat_color)
-        heatmap_df["label"] = heatmap_df.apply(
-            lambda r: f"<b>{r['name']}</b><br>{r['code']}<br>{r['change_pct']:+.1f}%", axis=1
-        )
-        heatmap_df["size"] = heatmap_df["change_pct"].abs() + 0.5  # 涨跌幅度越大块越大
-
-        fig_tm = go.Figure(go.Treemap(
-            labels=heatmap_df["label"],
-            parents=[""] * len(heatmap_df),
-            values=heatmap_df["size"],
-            marker=dict(colors=heatmap_df["color"], line=dict(width=1, color="#1a1a2e")),
-            textinfo="text",
-            textfont=dict(size=11),
-            hoverinfo="text",
-            maxdepth=1,
-        ))
-        fig_tm.update_layout(height=420, margin=dict(l=0, r=0, t=0, b=0),
-                             paper_bgcolor="#0e1117")
-        st.plotly_chart(fig_tm, use_container_width=True)
-        st.caption("🟥 红=涨  🟩 绿=跌 | 面积越大涨幅/跌幅越大")
-
     # --- 筛选器 ---
     col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:

@@ -17,73 +17,56 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import Stock, DailyPrice, News
 
 
-# --- 华东 300 成分股 (前 50 只用于原型) ---
-CSI300_SAMPLE = [
-    ("000001.SZ", "平安银行"),
-    ("000002.SZ", "万科A"),
-    ("000063.SZ", "中兴通讯"),
-    ("000100.SZ", "TCL科技"),
-    ("000333.SZ", "美的集团"),
-    ("000338.SZ", "潍柴动力"),
-    ("000425.SZ", "徐工机械"),
-    ("000568.SZ", "泸州老窖"),
-    ("000625.SZ", "长安汽车"),
-    ("000651.SZ", "格力电器"),
-    ("000725.SZ", "京东方A"),
-    ("000776.SZ", "广发证券"),
-    ("000858.SZ", "五粮液"),
-    ("002142.SZ", "宁波银行"),
-    ("002230.SZ", "科大讯飞"),
-    ("002352.SZ", "顺丰控股"),
-    ("002415.SZ", "海康威视"),
-    ("002459.SZ", "晶澳科技"),
-    ("002594.SZ", "比亚迪"),
-    ("002714.SZ", "牧原股份"),
-    ("300059.SZ", "东方财富"),
-    ("300274.SZ", "阳光电源"),
-    ("300308.SZ", "中际旭创"),
-    ("300498.SZ", "温氏股份"),
-    ("300750.SZ", "宁德时代"),
-    ("600000.SH", "浦发银行"),
-    ("600009.SH", "上海机场"),
-    ("600016.SH", "民生银行"),
-    ("600028.SH", "中国石化"),
-    ("600030.SH", "中信证券"),
-    ("600036.SH", "招商银行"),
-    ("600048.SH", "保利发展"),
-    ("600050.SH", "中国联通"),
-    ("600085.SH", "同仁堂"),
-    ("600104.SH", "上汽集团"),
-    ("600276.SH", "恒瑞医药"),
-    ("600309.SH", "万华化学"),
-    ("600406.SH", "国电南瑞"),
-    ("600436.SH", "片仔癀"),
-    ("600438.SH", "通威股份"),
-    ("600519.SH", "贵州茅台"),
-    ("600585.SH", "海螺水泥"),
-    ("600809.SH", "山西汾酒"),
-    ("600887.SH", "伊利股份"),
-    ("600900.SH", "长江电力"),
-    ("601012.SH", "隆基绿能"),
-    ("601088.SH", "中国神华"),
-    ("601166.SH", "兴业银行"),
-    ("601318.SH", "中国平安"),
-    ("601398.SH", "工商银行"),
-]
+def _get_all_a_stocks() -> list[tuple[str, str]]:
+    """从 akshare 获取全部 A 股股票代码和名称。"""
+    try:
+        df = ak.stock_info_a_code_name()
+    except Exception:
+        return []
+    if df.empty:
+        return []
+
+    stocks = []
+    for _, row in df.iterrows():
+        code = str(row["code"]).zfill(6)
+        name = str(row["name"])
+        # 判断交易所：6/9 开头为上海，0/2/3 开头为深圳
+        if code.startswith(("6", "9")):
+            full_code = f"{code}.SH"
+        else:
+            full_code = f"{code}.SZ"
+        stocks.append((full_code, name))
+    return stocks
 
 
 async def ensure_stocks(session: AsyncSession) -> list[Stock]:
-    """确保样本股票在数据库中，返回 Stock 对象列表。"""
-    stocks = []
-    for code, name in CSI300_SAMPLE:
-        result = await session.execute(select(Stock).where(Stock.code == code))
-        stock = result.scalar_one_or_none()
-        if stock is None:
-            stock = Stock(code=code, name=name)
-            session.add(stock)
-        stocks.append(stock)
+    """获取全部 A 股股票列表并确保在数据库中，返回 Stock 对象列表。"""
+    all_stocks = _get_all_a_stocks()
+    if not all_stocks:
+        return []
+
+    # 批量查询已有股票
+    new_codes = [code for code, _ in all_stocks]
+    existing = (await session.execute(
+        select(Stock).where(Stock.code.in_(new_codes))
+    )).scalars().all()
+    existing_map = {s.code: s for s in existing}
+
+    # 新增不存在的股票
+    new_stocks = []
+    for code, name in all_stocks:
+        if code in existing_map:
+            continue
+        s = Stock(code=code, name=name)
+        session.add(s)
+        new_stocks.append(s)
+
     await session.commit()
-    return stocks
+
+    # 返回全部股票（已有 + 新增）
+    for s in new_stocks:
+        existing_map[s.code] = s
+    return list(existing_map.values())
 
 
 def _code_to_ak_symbol(code: str) -> str:
@@ -148,9 +131,13 @@ async def fetch_and_store_prices(
     return count
 
 
-async def fetch_all_stocks_prices(session: AsyncSession) -> dict[str, int]:
-    """批量获取所有样本股票的股价数据。"""
+async def fetch_all_stocks_prices(
+    session: AsyncSession, max_stocks: int | None = None
+) -> dict[str, int]:
+    """批量获取股票的股价数据。max_stocks 限制处理数量，None 表示全部。"""
     stocks = await ensure_stocks(session)
+    if max_stocks:
+        stocks = stocks[:max_stocks]
     results = {}
     for stock in stocks:
         n = await fetch_and_store_prices(session, stock)

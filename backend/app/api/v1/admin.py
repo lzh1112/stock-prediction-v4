@@ -32,9 +32,13 @@ async def service_health(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/admin/seed-data")
-async def seed_data(db: AsyncSession = Depends(get_db)):
-    """抓取 50 只沪深 300 成分股的近一年股价数据。可能需要几分钟。"""
-    results = await fetch_all_stocks_prices(db)
+async def seed_data(
+    max_stocks: int = Query(0, description="限制获取价格的股票数，0=全部"),
+    db: AsyncSession = Depends(get_db),
+):
+    """抓取全部 A 股股票的近一年股价数据。可能需要较长时间。"""
+    limit = max_stocks if max_stocks > 0 else None
+    results = await fetch_all_stocks_prices(db, max_stocks=limit)
     total = sum(results.values())
     return {
         "status": "ok",
