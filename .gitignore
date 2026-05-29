@@ -45,6 +45,8 @@ logs/
 # Database
 *.db
 *.sqlite3
+*.db-journal
+backend/data/
 
 # Docker
 docker-data/
