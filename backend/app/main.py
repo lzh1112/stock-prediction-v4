@@ -17,12 +17,19 @@ from .models import Base
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：创建表 + 确保数据目录存在
+    # 启动时：创建表 + 确保数据目录存在 + 启动内置调度器
     os.makedirs(os.path.dirname(settings.DATABASE_PATH) or ".", exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # 启动内置调度器（Redis 不可用时自动启用）
+    from .services.scheduler import start_scheduler, stop_scheduler
+    await start_scheduler()
+
     yield
+
     # 关闭时
+    await stop_scheduler()
     await engine.dispose()
 
 

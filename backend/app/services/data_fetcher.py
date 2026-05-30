@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from datetime import date, datetime, timedelta
 
 import akshare as ak
@@ -15,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Stock, DailyPrice, News
+
+logger = logging.getLogger(__name__)
 
 
 def _get_all_a_stocks() -> list[tuple[str, str]]:
@@ -132,16 +136,42 @@ async def fetch_and_store_prices(
 
 
 async def fetch_all_stocks_prices(
-    session: AsyncSession, max_stocks: int | None = None
+    session: AsyncSession, max_stocks: int | None = None, concurrency: int = 10
 ) -> dict[str, int]:
-    """批量获取股票的股价数据。max_stocks 限制处理数量，None 表示全部。"""
+    """批量获取股票的股价数据。max_stocks 限制处理数量，None 表示全部。
+
+    使用 asyncio.Semaphore 控制并发数，避免同时发起过多网络请求。
+    每个并发任务使用独立的 DB session，保证线程安全。
+    """
     stocks = await ensure_stocks(session)
     if max_stocks:
         stocks = stocks[:max_stocks]
-    results = {}
-    for stock in stocks:
-        n = await fetch_and_store_prices(session, stock)
-        results[stock.code] = n
+
+    if not stocks:
+        return {}
+
+    logger.info("开始并发抓取 %d 只股票的价格数据（并发数=%d）…", len(stocks), concurrency)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def fetch_one(stock: Stock) -> tuple[str, int]:
+        async with semaphore:
+            try:
+                # 每个并发任务创建独立的 DB session
+                from app.api.deps import async_session
+                async with async_session() as sess:
+                    n = await fetch_and_store_prices(sess, stock)
+                    return (stock.code, n)
+            except Exception as exc:
+                logger.warning("抓取 %s 价格异常: %s", stock.code, exc)
+                return (stock.code, 0)
+
+    tasks = [fetch_one(s) for s in stocks]
+    results_list = await asyncio.gather(*tasks)
+
+    results = dict(results_list)
+    total = sum(results.values())
+    succeeded = sum(1 for v in results.values() if v > 0)
+    logger.info("价格抓取完成: %d/%d 只有新数据，总计 %d 条记录", succeeded, len(results), total)
     return results
 
 
@@ -202,13 +232,37 @@ async def fetch_news_for_stock(
     return count
 
 
-async def fetch_all_stocks_news(session: AsyncSession) -> dict[str, int]:
-    """批量获取所有样本股票的新闻。"""
+async def fetch_all_stocks_news(
+    session: AsyncSession, concurrency: int = 10
+) -> dict[str, int]:
+    """批量获取所有样本股票的新闻。
+
+    使用 asyncio.Semaphore 控制并发数，每个并发任务使用独立的 DB session。
+    """
     stocks = await ensure_stocks(session)
-    results = {}
-    for stock in stocks:
-        n = await fetch_news_for_stock(session, stock)
-        results[stock.code] = n
+    if not stocks:
+        return {}
+
+    logger.info("开始并发抓取 %d 只股票的新闻数据（并发数=%d）…", len(stocks), concurrency)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def fetch_one(stock: Stock) -> tuple[str, int]:
+        async with semaphore:
+            try:
+                from app.api.deps import async_session
+                async with async_session() as sess:
+                    n = await fetch_news_for_stock(sess, stock)
+                    return (stock.code, n)
+            except Exception as exc:
+                logger.warning("抓取 %s 新闻异常: %s", stock.code, exc)
+                return (stock.code, 0)
+
+    tasks = [fetch_one(s) for s in stocks]
+    results_list = await asyncio.gather(*tasks)
+
+    results = dict(results_list)
+    total = sum(results.values())
+    logger.info("新闻抓取完成: %d 条新记录", total)
     return results
 
 
